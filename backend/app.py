@@ -335,12 +335,26 @@ def track_application(application_number):
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
+        # First, try to find in regular applications
         cursor.execute("""
             SELECT application_number, full_names, status, created_at, updated_at
             FROM applications WHERE application_number = %s
         """, (application_number,))
         
         application = cursor.fetchone()
+        
+        # If not found in regular applications, check lost_id_applications using waiting card number
+        if not application:
+            cursor.execute("""
+                SELECT l.waiting_card_number as application_number, c.full_names, 
+                       l.status, l.created_at, l.updated_at
+                FROM lost_id_applications l
+                LEFT JOIN citizens c ON l.citizen_id_number = c.id_number
+                WHERE l.waiting_card_number = %s
+            """, (application_number,))
+            
+            application = cursor.fetchone()
+        
         cursor.close()
         conn.close()
         
@@ -358,20 +372,42 @@ def get_all_applications():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
+        # Get regular applications
         cursor.execute("""
             SELECT a.id, a.application_number, a.full_names, a.status, 
                    a.application_type, a.created_at, a.updated_at,
-                   o.full_name as officer_name
+                   o.full_name as officer_name, 'regular' as source_type
             FROM applications a 
             LEFT JOIN officers o ON a.officer_id = o.id
             ORDER BY a.created_at DESC
         """)
         
-        applications = cursor.fetchall()
+        regular_applications = cursor.fetchall()
+        
+        # Get lost ID applications (renewal applications)
+        cursor.execute("""
+            SELECT l.id, l.waiting_card_number as application_number, 
+                   c.full_names, l.status, 'renewal' as application_type, 
+                   l.created_at, l.updated_at, o.full_name as officer_name,
+                   'lost_id' as source_type
+            FROM lost_id_applications l
+            LEFT JOIN officers o ON l.officer_id = o.id
+            LEFT JOIN citizens c ON l.citizen_id_number = c.id_number
+            ORDER BY l.created_at DESC
+        """)
+        
+        lost_id_applications = cursor.fetchall()
+        
+        # Combine both types of applications
+        all_applications = regular_applications + lost_id_applications
+        
+        # Sort by created_at desc
+        all_applications.sort(key=lambda x: x['created_at'], reverse=True)
+        
         cursor.close()
         conn.close()
         
-        return jsonify({'applications': applications}), 200
+        return jsonify({'applications': all_applications}), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -529,6 +565,58 @@ def dispatch_application(application_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/officer/lost-id-applications/<int:application_id>/card-arrived', methods=['PUT'])
+def mark_lost_id_card_arrived(application_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE lost_id_applications 
+            SET status = 'ready_for_collection', updated_at = %s 
+            WHERE id = %s AND status = 'dispatched'
+        """, (datetime.now(), application_id))
+        
+        if cursor.rowcount == 0:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Application not found or not in dispatched status'}), 404
+            
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'message': 'Lost ID card arrival confirmed'}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/officer/lost-id-applications/<int:application_id>/card-collected', methods=['PUT'])
+def mark_lost_id_card_collected(application_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE lost_id_applications 
+            SET status = 'collected', updated_at = %s 
+            WHERE id = %s AND status = 'ready_for_collection'
+        """, (datetime.now(), application_id))
+        
+        if cursor.rowcount == 0:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Application not found or not ready for collection'}), 404
+            
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({'message': 'Lost ID card collection confirmed'}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # Officer Application Management Routes
 @app.route('/api/officer/applications', methods=['GET'])
 def get_officer_applications():
@@ -539,15 +627,16 @@ def get_officer_applications():
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Get regular applications
         cursor.execute("""
             SELECT id, application_number, full_names, status, created_at, 
-                   updated_at, generated_id_number
+                   updated_at, generated_id_number, 'regular' as application_type
             FROM applications 
             WHERE officer_id = %s 
             ORDER BY created_at DESC
         """, (officer_id,))
         
-        applications = []
+        regular_applications = []
         for row in cursor.fetchall():
             app = {
                 'id': row[0],
@@ -556,14 +645,47 @@ def get_officer_applications():
                 'status': row[3],
                 'created_at': row[4].isoformat() if row[4] else None,
                 'updated_at': row[5].isoformat() if row[5] else None,
-                'generated_id_number': row[6]
+                'generated_id_number': row[6],
+                'application_type': row[7],
+                'source_type': 'regular'
             }
-            applications.append(app)
+            regular_applications.append(app)
+        
+        # Get lost ID applications (renewal applications)
+        cursor.execute("""
+            SELECT lia.id, lia.waiting_card_number, c.full_names, lia.status, lia.created_at,
+                   lia.updated_at, lia.citizen_id_number, 'renewal' as application_type
+            FROM lost_id_applications lia
+            LEFT JOIN citizens c ON lia.citizen_id_number = c.id_number
+            WHERE lia.officer_id = %s
+            ORDER BY lia.created_at DESC
+        """, (officer_id,))
+        
+        lost_id_applications = []
+        for row in cursor.fetchall():
+            app = {
+                'id': row[0],
+                'application_number': row[1],  # waiting_card_number
+                'full_names': row[2],
+                'status': row[3],
+                'created_at': row[4].isoformat() if row[4] else None,
+                'updated_at': row[5].isoformat() if row[5] else None,
+                'generated_id_number': row[6],  # citizen_id_number
+                'application_type': row[7],
+                'source_type': 'lost_id'
+            }
+            lost_id_applications.append(app)
+        
+        # Combine both types of applications
+        all_applications = regular_applications + lost_id_applications
+        
+        # Sort by created_at desc
+        all_applications.sort(key=lambda x: x['created_at'] if x['created_at'] else '', reverse=True)
         
         cursor.close()
         conn.close()
         
-        return jsonify(applications), 200
+        return jsonify(all_applications), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500

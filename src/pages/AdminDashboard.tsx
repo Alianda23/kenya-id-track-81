@@ -30,6 +30,7 @@ interface Application {
   updated_at: string;
   officer_name: string;
   generated_id_number?: string;
+  source_type?: string;
 }
 
 const AdminDashboard = () => {
@@ -345,12 +346,12 @@ const AdminDashboard = () => {
                       </TableHeader>
                       <TableBody>
                         {applications.map((application) => (
-                          <TableRow key={application.id}>
+                          <TableRow key={`${application.source_type || 'regular'}-${application.id}`}>
                             <TableCell>
                               <div className="space-y-1">
                                 <div className="font-medium">{application.application_number}</div>
                                 <div className="text-sm text-muted-foreground">
-                                  ID: {application.id}
+                                  ID: {application.id} {application.source_type === 'lost_id' ? '(Renewal)' : ''}
                                 </div>
                               </div>
                             </TableCell>

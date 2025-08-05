@@ -16,6 +16,8 @@ interface Application {
   created_at: string;
   updated_at: string;
   generated_id_number: string;
+  application_type?: string;
+  source_type?: string;
 }
 
 const OfficerDashboard = () => {
@@ -128,6 +130,60 @@ const OfficerDashboard = () => {
       toast({
         title: "Error",
         description: "Failed to confirm card collection", 
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleLostIdCardArrived = async (applicationId: number) => {
+    try {
+      const response = await fetch(`http://localhost:5000/api/officer/lost-id-applications/${applicationId}/card-arrived`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      if (response.ok) {
+        toast({
+          title: "Success",
+          description: "Renewal ID card arrival confirmed"
+        });
+        fetchApplications();
+      } else {
+        throw new Error('Failed to update status');
+      }
+    } catch (error) {
+      toast({
+        title: "Error", 
+        description: "Failed to confirm renewal card arrival",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleLostIdCardCollected = async (applicationId: number) => {
+    try {
+      const response = await fetch(`http://localhost:5000/api/officer/lost-id-applications/${applicationId}/card-collected`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      if (response.ok) {
+        toast({
+          title: "Success",
+          description: "Renewal ID card collection confirmed"
+        });
+        fetchApplications();
+      } else {
+        throw new Error('Failed to update status');
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to confirm renewal card collection",
         variant: "destructive"
       });
     }
@@ -295,9 +351,14 @@ const OfficerDashboard = () => {
                     </TableHeader>
                     <TableBody>
                       {applications.map((app) => (
-                        <TableRow key={app.id}>
+                        <TableRow key={`${app.source_type || 'regular'}-${app.id}`}>
                           <TableCell className="font-medium">
-                            {app.application_number}
+                            <div className="space-y-1">
+                              <div>{app.application_number}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {app.application_type === 'renewal' ? 'ID Renewal' : 'New Application'}
+                              </div>
+                            </div>
                           </TableCell>
                           <TableCell>{app.full_names}</TableCell>
                           <TableCell>
@@ -313,7 +374,7 @@ const OfficerDashboard = () => {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => handleCardArrived(app.id)}
+                                  onClick={() => app.source_type === 'lost_id' ? handleLostIdCardArrived(app.id) : handleCardArrived(app.id)}
                                   className="flex items-center gap-1"
                                 >
                                   <Package className="h-3 w-3" />
@@ -323,7 +384,7 @@ const OfficerDashboard = () => {
                               {(app.status === 'ready_for_collection' || (app.status === '' && app.generated_id_number)) && (
                                 <Button
                                   size="sm"
-                                  onClick={() => handleCardCollected(app.id)}
+                                  onClick={() => app.source_type === 'lost_id' ? handleLostIdCardCollected(app.id) : handleCardCollected(app.id)}
                                   className="flex items-center gap-1"
                                 >
                                   <CheckCircle className="h-3 w-3" />
@@ -333,7 +394,7 @@ const OfficerDashboard = () => {
                               {/* Show debug info for troubleshooting */}
                               {process.env.NODE_ENV === 'development' && (
                                 <span className="text-xs text-muted-foreground">
-                                  Status: "{app.status}"
+                                  Status: "{app.status}" Type: {app.source_type}
                                 </span>
                               )}
                             </div>
